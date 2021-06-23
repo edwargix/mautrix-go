@@ -578,7 +578,8 @@ func (mach *OlmMachine) handleVerificationRequest(userID id.UserID, content *eve
 		return
 	}
 	resp, hooks := mach.AcceptVerificationFrom(transactionID, otherDevice, inRoomID)
-	if resp == AcceptRequest {
+	switch resp {
+	case AcceptRequest:
 		mach.Log.Debug("Accepting SAS verification %v from %v of user %v", transactionID, otherDevice.DeviceID, otherDevice.UserID)
 		if inRoomID == "" {
 			_, err = mach.NewSASVerificationWith(otherDevice, hooks, transactionID, mach.DefaultSASTimeout)
@@ -594,14 +595,14 @@ func (mach *OlmMachine) handleVerificationRequest(userID id.UserID, content *eve
 		if err != nil {
 			mach.Log.Error("Error accepting SAS verification request: %v", err)
 		}
-	} else if resp == RejectRequest {
+	case RejectRequest:
 		mach.Log.Debug("Rejecting SAS verification %v from %v of user %v", transactionID, otherDevice.DeviceID, otherDevice.UserID)
 		if inRoomID == "" {
 			_ = mach.SendSASVerificationCancel(otherDevice.UserID, otherDevice.DeviceID, transactionID, "Not accepted by user", event.VerificationCancelByUser)
 		} else {
 			_ = mach.SendInRoomSASVerificationCancel(inRoomID, otherDevice.UserID, transactionID, "Not accepted by user", event.VerificationCancelByUser)
 		}
-	} else {
+	default:
 		mach.Log.Debug("Ignoring SAS verification %v from %v of user %v", transactionID, otherDevice.DeviceID, otherDevice.UserID)
 	}
 }
@@ -616,11 +617,15 @@ func (mach *OlmMachine) NewSimpleSASVerificationWith(device *DeviceIdentity, hoo
 // If the other device accepts the verification transaction, the methods in `hooks` will be used to verify the SAS match and to complete the transaction..
 // If the transaction ID is empty, a new one is generated.
 func (mach *OlmMachine) NewSASVerificationWith(device *DeviceIdentity, hooks VerificationHooks, transactionID string, timeout time.Duration) (string, error) {
-	if transactionID == "" {
-		transactionID = strconv.Itoa(rand.Int())
-	}
 	mach.Log.Debug("Starting new verification transaction %v with device %v of user %v", transactionID, device.DeviceID, device.UserID)
-
+	request := transactionID == ""
+	if request {
+		transactionID = strconv.Itoa(rand.Int())
+		err := mach.SendSASVerificationRequest(device.UserID, device.DeviceID, transactionID)
+		if err != nil {
+			return "", err
+		}
+	}
 	verState := &verificationState{
 		sas:                 olm.NewSAS(),
 		otherDevice:         device,
@@ -633,21 +638,24 @@ func (mach *OlmMachine) NewSASVerificationWith(device *DeviceIdentity, hooks Ver
 	verState.lock.Lock()
 	defer verState.lock.Unlock()
 
-	startEvent, err := mach.SendSASVerificationStart(device.UserID, device.DeviceID, transactionID, hooks.VerificationMethods())
-	if err != nil {
-		return "", err
+	if !request {
+		startEvent, err := mach.SendSASVerificationStart(device.UserID, device.DeviceID, transactionID, hooks.VerificationMethods())
+		if err != nil {
+			return "", err
+		}
+
+		payload, err := json.Marshal(startEvent)
+		if err != nil {
+			return "", err
+		}
+		canonical, err := canonicaljson.CanonicalJSON(payload)
+		if err != nil {
+			return "", err
+		}
+
+		verState.startEventCanonical = string(canonical)
 	}
 
-	payload, err := json.Marshal(startEvent)
-	if err != nil {
-		return "", err
-	}
-	canonical, err := canonicaljson.CanonicalJSON(payload)
-	if err != nil {
-		return "", err
-	}
-
-	verState.startEventCanonical = string(canonical)
 	_, loaded := mach.keyVerificationTransactionState.LoadOrStore(device.UserID.String()+":"+transactionID, verState)
 	if loaded {
 		return "", ErrTransactionAlreadyExists
@@ -683,7 +691,18 @@ func (mach *OlmMachine) SendSASVerificationCancel(userID id.UserID, deviceID id.
 	return mach.sendToOneDevice(userID, deviceID, event.ToDeviceVerificationCancel, content)
 }
 
-// SendSASVerificationStart is used to manually send the SAS verification start message to another device.
+// SendSASVerificationRequest is used to manually send a SAS verification request message to another device.
+func (mach *OlmMachine) SendSASVerificationRequest(userID id.UserID, deviceID id.DeviceID, transactionID string) error {
+	content := &event.VerificationRequestEventContent{
+		FromDevice:    mach.Client.DeviceID,
+		TransactionID: transactionID,
+		Methods:       []event.VerificationMethod{event.VerificationMethodSAS},
+		Timestamp:     time.Now().Unix(),
+	}
+	return mach.sendToOneDevice(userID, deviceID, event.ToDeviceVerificationRequest, content)
+}
+
+// SendSASVerificationStart is used to manually send a SAS verification start message to another device.
 func (mach *OlmMachine) SendSASVerificationStart(toUserID id.UserID, toDeviceID id.DeviceID, transactionID string, methods []VerificationMethod) (*event.VerificationStartEventContent, error) {
 	sasMethods := make([]event.SASMethod, len(methods))
 	for i, method := range methods {

@@ -259,7 +259,7 @@ func (mach *OlmMachine) NewInRoomSASVerificationWith(inRoomID id.RoomID, userID 
 }
 
 func (mach *OlmMachine) newInRoomSASVerificationWithInner(inRoomID id.RoomID, device *DeviceIdentity, hooks VerificationHooks, transactionID string, timeout time.Duration) (string, error) {
-	mach.Log.Debug("Starting new in-room verification transaction user %v", device.UserID)
+	mach.Log.Debug("Starting new in-room verification transaction with user %v", device.UserID)
 
 	request := transactionID == ""
 	if request {
